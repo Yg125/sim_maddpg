@@ -3,7 +3,9 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from torch.optim.lr_scheduler import StepLR
-
+import os 
+from Configure import seed
+np.random.seed(seed)
 def onehot_from_logits(logits, eps=0.01):
     ''' 生成最优动作的独热（one-hot）形式 '''
     argmax_acs = (logits == logits.max(1, keepdim=True)[0]).float()
@@ -163,4 +165,17 @@ class MADDPG:
             agt.soft_update(agt.actor, agt.target_actor, self.tau)
             agt.soft_update(agt.critic, agt.target_critic, self.tau)
 
-
+    def save(self, path):
+        if not os.path.exists(path):
+            os.makedirs(path)
+        for i, agent in enumerate(self.agents):
+            torch.save(agent.actor.state_dict(), f'{path}/agent_{i}_actor.pth')
+            torch.save(agent.critic.state_dict(), f'{path}/agent_{i}_critic.pth')
+        
+        
+    def load(self, path):
+        for i, agent in enumerate(self.agents):
+            agent.actor.load_state_dict(torch.load(f'{path}/agent_{i}_actor.pth'))
+            agent.critic.load_state_dict(torch.load(f'{path}/agent_{i}_critic.pth'))
+            agent.target_actor.load_state_dict(agent.actor.state_dict())
+            agent.target_critic.load_state_dict(agent.critic.state_dict())

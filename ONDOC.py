@@ -1,12 +1,15 @@
-from Configure import Task, DAG, NUM_AGENTS, mu_c, Gamma, w_1, w_2, w_3, eta_vio, B_u, B_e, B_c, B_aver, NUM_TASKS, Lambda, Q
-from Env import Server, Remote_cloud, server_capacity, service_size, comp, request_list3, request_list5, interval_dict, task_type
+import random
+from Configure import DAG, Task, B_u, B_aver, B_c, B_e, Lambda, Q, beta, NUM_AGENTS, capacity
+from Env import Server, Remote_cloud, server_capacity, comp, request_dict, interval_dict, task_type, ScheduleEnv
 from collections import deque
 import numpy as np
 
 # 由于只在EST时将任务调度到目标服务器，所以不可能出现排队现象，只是在计算EST、EFT时需要考虑当前边缘服务器是否正在处理任务，有avail时间
 # 远程云不用考虑，只需要计算依赖限制的EST，边缘服务器还需考虑avail时间，取最大值
 configuring_time = 30  # ms
-
+random.seed(1)
+env = ScheduleEnv()
+    
 class OnDoc:
     def __init__(self):
         self.B_u = B_u
@@ -22,11 +25,10 @@ class OnDoc:
         self.arrive_list = [0 for _ in range(self.Q)]
         self.virtual_time = 0.0 
         self.processors = self.servers + [self.cloud]
-        self.graph = np.empty((self.Q, NUM_TASKS + 2, NUM_TASKS + 2))
-        self.comp_cost = np.empty((self.Q, NUM_TASKS + 2, NUM_AGENTS+1))
+        self.graph = [0 for _ in range(self.Q)]
+        self.comp_cost = [0 for _ in range(self.Q)]
         self.tasks = [0 for _ in range(self.Q)]
-        self.reward = 0
-        self.request_list = request_list3 if NUM_AGENTS == 3 else request_list5
+        self.request_list = request_dict[NUM_AGENTS]     # Env中的request_list 避免调用全局变量
         self.interval_list = interval_dict[Lambda]
         self.task_type = task_type
         
@@ -48,15 +50,17 @@ class OnDoc:
     def receive_dag(self):                    # k is the index of the request/queue from 0
         virtual_time = 0
         tasks = [0 for _ in range(self.Q)]
-        DAGS = np.load(f'./dag_infos/dag_info_{NUM_TASKS}_es{NUM_AGENTS}.npy', allow_pickle=True)  # Read DAG from file
+        DAGS = np.load(f'./dag_infos/dag_info_random.npy', allow_pickle=True)  # Read DAG from file
+        type_count = 0
         for k in range(self.Q):
             self.dags[k] = DAG(k)
             self.dags[k].num_tasks, self.comp_cost[k], self.graph[k], deadline_heft = DAGS[k]   
-            self.dags[k].deadline = virtual_time + deadline_heft * 1.3   # 以heft算法的deadline为基准，增加15%的时间作为在线场景DAG的deadline
+            self.dags[k].deadline = virtual_time + deadline_heft * beta   # 以heft算法的deadline为基准，增加15%的时间作为在线场景DAG的deadline
             self.dags[k].r = virtual_time    # ms
             self.arrive_list[k] = virtual_time
             num_tasks = self.dags[k].num_tasks
-            tasks[k] = [Task(i,k,self.task_type[k*(NUM_TASKS + 2)+i]) for i in range(num_tasks)]
+            tasks[k] = [Task(i,k,self.task_type[type_count+i]) for i in range(num_tasks)]
+            type_count += num_tasks
             data_in = 0
             for j in range(self.dags[k].num_tasks):
                 tasks[k][j].avg_comp = sum(self.comp_cost[k][j]) / self.num_processors
@@ -76,14 +80,6 @@ class OnDoc:
         self.queues.append(deque(tasks))
 
     def schedule(self):
-        for processor in self.processors:        # 由于processors信息在environment.py中定义，所以这里需要重新初始化
-            processor.task_list = []
-            processor.service_list = [0,1,1,0,1]   # random initial 
-            processor.service_end = [0,0,0,0,0]    # when the service is free
-            processor.service_start = [0,0,0,0,0]
-            if processor.id == NUM_AGENTS:
-                for vm in processor.vms:
-                    vm.task_list = []
         index = 0
         self.virtual_time = 0.0
         self.arrive(index)
@@ -103,24 +99,13 @@ class OnDoc:
                 self.arrive(index)
                 index += 1
             task = self.queues[min_k][0]
-            if tar_p in range(NUM_AGENTS):
-                if (task.service_id not in self.processors[tar_p].service_list) and (task.id != 0 and task.id != NUM_TASKS + 1):   
-                    if sum(self.processors[tar_p].service_list) == 3:
-                        replace = self.processors[tar_p].service_end.index(min(self.processors[tar_p].service_end))
-                        self.reward += -Gamma * service_size[task.service_id] * w_1 * (self.processors[tar_p].service_end[replace] - self.processors[tar_p].service_start[replace])/1000
-                        self.processors[tar_p].service_list[replace] = 0
-                        self.processors[tar_p].service_end[replace] = 0
-                        self.processors[tar_p].service_start[replace] = 0
-                    self.processors[tar_p].service_list[task.service_id] = 1
-                    self.reward += -service_size[task.service_id] * mu_c * w_2 
-                    self.processors[tar_p].service_start[task.service_id] = self.virtual_time + configuring_time
-                        
-                    # min_k, tar_p, tar_est, tar_vm = self.check_queues()
+            # if virtual_time > tar_est:
+                # 由于DAG构造rank大的EST可能会比某些rank小的更大，所以可能出现虚拟时间超过EST的情况，只能在当前时间调度
+                # 所以只根据rank来判断是不合理的，应该考虑COFE中当一个任务完成时有什么任务可以调度ready_tasks
+                # print('DAGS:{}, id:{}, est:{}, virtual_time:{}'.format(min_k,queues[min_k][0].id,tar_est,virtual_time))
+                # tar_est = virtual_time
             self.advance_virtual_time(tar_est - self.virtual_time)
             self.schedule_task(task, tar_p, tar_est, tar_vm)
-        for p in range(NUM_AGENTS):
-            for i in range(5):
-                self.reward += - Gamma*self.processors[p].service_list[i] * service_size[i] * (self.processors[p].service_end[i] - self.processors[p].service_start[i]) / 1000
                 
     def check_queues(self):
         tar_est = float('inf')
@@ -153,22 +138,13 @@ class OnDoc:
         queue.popleft()
         if p in range(NUM_AGENTS):
             self.processors[p].task_list.append(task)
-            self.processors[p].service_end[task.service_id] = t.end
         else:
             self.processors[NUM_AGENTS].vms[vm].task_list.append(task)
          
     def get_est(self, t, p, k): 
-        if (p.id in range(NUM_AGENTS) and not p.service_list[t.service_id]) and (t.id != 0 and t.id != NUM_TASKS + 1):
-            if sum(p.service_list) < 3:
-                est = max(self.dags[k].r + self.dags[k].t_offload, self.virtual_time + configuring_time)
-            else:
-                est = max(self.dags[k].r + self.dags[k].t_offload, self.virtual_time + configuring_time, min(p.service_end[i] for i, v in enumerate(p.service_list) if v == 1))
-        else:
-            est = max(self.dags[k].r + self.dags[k].t_offload, self.virtual_time)    # 初始化est时间为任务到达时间和offload时间之和
-        # est = self.dags[k].r + self.dags[k].t_offload    # 初始化est时间为任务到达时间和offload时间之和
+        est = max(self.dags[k].r + self.dags[k].t_offload, self.virtual_time)    # 初始化est时间为任务到达时间和offload时间之和
         graph = self.graph[k]
         tasks = self.tasks[k]
-        
         for pre in tasks:
             if graph[pre.id][t.id] != -1:  # if pre also done on p, no communication cost
                 c = graph[pre.id][t.id] if pre.processor_id != p.id else 0
@@ -237,7 +213,6 @@ class OnDoc:
             if self.Makespan < self.dags[k].deadline - self.dags[k].r:
                 satisfy += 1
         print("E = {}, C = {}".format(task_e, task_c))
-        self.reward += -w_3 * (self.Q - satisfy) * eta_vio
         SR = satisfy / self.Q * 100
         return SR
         
@@ -246,4 +221,4 @@ ondoc.receive_dag()
 ondoc.schedule()
 
 str = ondoc.str()
-print(f"Q={ondoc.Q} ES={NUM_AGENTS} NUM={NUM_TASKS} lambda=3 SR={str}% Reward={ondoc.reward}")
+print('ONDOC Lambda:{}, SR:{}'.format(Lambda, str))

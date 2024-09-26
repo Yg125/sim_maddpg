@@ -3,7 +3,8 @@ import numpy as np
 import torch
 import collections
 import random
-
+from Configure import seed
+np.random.seed(seed)
 class ReplayBuffer:
     def __init__(self, capacity):
         self.buffer = collections.deque(maxlen=capacity) 

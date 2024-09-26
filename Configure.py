@@ -1,25 +1,22 @@
 import torch
 import numpy as np
 
-NUM_AGENTS = 5
-NUM_TASKS = 20
-Lambda = 3
+# 敏感度分析参数
+Lambda = 6  # [2,4,6,8,10]
+NUM_AGENTS = 4 # [1,3,4,5,6,7]
+capacity = 3  # [1,2,3,4]
+beta = 1.3  # [1.0, 1,1, 1.2, 1.3, 1.4, 1.5, 1.6]
+ccr = 0.9
 Q = 200
 
+seed = 91
 MAX_TIME = 30000
 TIME_STAMP = 1000 # ms
-np.random.seed(1)
 B_u = 7.81
 B_c = 80
 B_e = 17.77  # ns/B
 B_aver = ((NUM_AGENTS-1)*B_e+B_c)/NUM_AGENTS
 
-
-w_1 = 0.2 # 10
-w_2 = 0.1  # 1
-w_3 = 0.7 # 0.2
-mu_c = 0.08
-Gamma = 0.04
 eta_vio = 20
 eta = 10
 
@@ -85,10 +82,6 @@ class Args:
         self.lr = 1e-2
         self.start_size = 1e3
         
-        # coefficient
-        self.w_1 = w_1 # 0.3
-        self.w_2 = w_2  # 0.2
-        self.w_3 = w_3 # 0.5
         
         # epsilon greedy
         self.epsilon = 1

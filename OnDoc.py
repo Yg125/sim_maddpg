@@ -6,11 +6,11 @@ import numpy as np
 
 # 由于只在EST时将任务调度到目标服务器，所以不可能出现排队现象，只是在计算EST、EFT时需要考虑当前边缘服务器是否正在处理任务，有avail时间
 # 远程云不用考虑，只需要计算依赖限制的EST，边缘服务器还需考虑avail时间，取最大值
-configuring_time = 35  # ms
+configuring_time = 30  # ms
+random.seed(200)
 env = ScheduleEnv()
-random.seed(155)
-class COFE:
-    def __init__(self):   
+class OnDoc:
+    def __init__(self):
         self.B_u = B_u
         self.B_aver = B_aver
         self.B_c = B_c
@@ -21,22 +21,19 @@ class COFE:
         self.queues = []
         self.num_processors = NUM_AGENTS + 1
         self.dags = [0 for _ in range(self.Q)]
-        self.ready_tasks = []
-        self.virtual_time = 0.0        # 定义在线场景的虚拟时间，避免受机器运行时间干扰
-        self.complete_task = []        # COFE算法中记录每个子任务的完成时间
         self.arrive_list = [0 for _ in range(self.Q)]
         self.virtual_time = 0.0 
         self.processors = self.servers + [self.cloud]
         self.graph = [0 for _ in range(self.Q)]
         self.comp_cost = [0 for _ in range(self.Q)]
         self.tasks = [0 for _ in range(self.Q)]
-        self.request_list = request_dict[NUM_AGENTS]
+        self.request_list = request_dict[NUM_AGENTS]     # Env中的request_list 避免调用全局变量
         self.interval_list = interval_dict[Lambda]
         self.task_type = task_type
         
     def advance_virtual_time(self, duration):
         self.virtual_time += duration
-        
+    
     def computeRank(self, task, k, computed_ranks):
         if task in computed_ranks:
             return computed_ranks[task]
@@ -52,7 +49,7 @@ class COFE:
     def receive_dag(self):                    # k is the index of the request/queue from 0
         virtual_time = 0
         tasks = [0 for _ in range(self.Q)]
-        DAGS = np.load(f'./dag_infos/dag_info_random_es7_new2.npy', allow_pickle=True)  # Read DAG from file
+        DAGS = np.load(f'./dag_infos/dag_info_random.npy', allow_pickle=True)  # Read DAG from file
         type_count = 0
         for k in range(self.Q):
             self.dags[k] = DAG(k)
@@ -62,7 +59,7 @@ class COFE:
             self.dags[k].r = virtual_time    # ms
             self.arrive_list[k] = virtual_time
             num_tasks = self.dags[k].num_tasks
-            tasks[k] = [Task(i,k,self.task_type[type_count+i],self.dags[k].deadline) for i in range(num_tasks)]
+            tasks[k] = [Task(i,k,self.task_type[type_count+i]) for i in range(num_tasks)]
             type_count += num_tasks
             data_in = 0
             for j in range(self.dags[k].num_tasks):
@@ -80,90 +77,98 @@ class COFE:
         tasks = self.tasks[k]
         computed_ranks = {}
         self.computeRank(tasks[0], k, computed_ranks)
-        tasks.sort(key = lambda x: x.rank, reverse=True)
         self.queues.append(deque(tasks))
-        self.ready_tasks.append(self.queues[k][0])
-        self.schedule_tasks()
-        
+
     def schedule(self):
-        # COFE:
-        # 1. New Request Arrival: 当有新请求到达时，计算每个任务的rank，将v_0插入ready_tasks，并从V中删除，调用schedule(ready_task)
-        # 2. Processing Task Completion: 当任务完成时，从V中删除，根据该任务的直接后继判断是否是ready_task，并将其加入，调用schedule(ready_task)
-        # 3. Schedule Task: 对ready_tasks队列排序，先根据deadline排序，再根据rank排序中选择一个任务，计算其EST，选择一个processor，计算其EFT，将任务调度到processor上
-        # schedule task at EST
-        # otherwise, wait
         avail_action = [[[0, 0, 0, 0, 1],[0, 0, 0, 1, 0],[0, 0, 1, 0, 0],[0, 1, 0, 0, 0],[1, 0, 0, 0, 0]],
                         [[0, 0, 0, 1, 1],[0, 0, 1, 0, 1],[0, 0, 1, 1, 0],[0, 1, 0, 0, 1],[0, 1, 0, 1, 0],[0, 1, 1, 0, 0],[1, 0, 0, 0, 1],[1, 0, 0, 1, 0],[1, 0, 1, 0, 0],[1, 1, 0, 0, 0]],
                         [[0, 0, 1, 1, 1],[0, 1, 0, 1, 1],[0, 1, 1, 0, 1],[0, 1, 1, 1, 0],[1, 0, 0, 1, 1],[1, 0, 1, 0, 1],[1, 0, 1, 1, 0],[1, 1, 0, 0, 1],[1, 1, 0, 1, 0],[1, 1, 1, 0, 0]],
                         [[0, 1, 1, 1, 1],[1, 0, 1, 1, 1],[1, 1, 0, 1, 1],[1, 1, 1, 0, 1],[1, 1, 1, 1, 0]]]
-        for i in range(NUM_AGENTS):        # 由于processors信息在environment.py中定义，所以这里需要重新初始化
-            self.processors[i].task_list = []
-            self.processors[i].service_list = random.sample(avail_action[capacity-1], 1)[0]   # random initial 
-        for vm in self.processors[NUM_AGENTS].vms:
-            vm.task_list = []
-        k = 0
+        for processor in self.processors:        # 由于processors信息在environment.py中定义，所以这里需要重新初始化
+            processor.task_list = []
+            processor.service_list = random.sample(avail_action[capacity-1], 1)[0]   # random initial 
+            # processor.service_end = [0,0,0,0,0]    # when the service is free
+            # processor.service_start = [0,0,0,0,0]
+            if processor.id == NUM_AGENTS:
+                for vm in processor.vms:
+                    vm.task_list = []
+        index = 0
         self.virtual_time = 0.0
-        self.arrive(k)
-        k += 1
-        while any(queue for queue in self.queues) or k < len(self.arrive_list):
-            while len(self.complete_task) != 0 and self.virtual_time <= self.complete_task[0].end:
-                while k < len(self.arrive_list) and self.virtual_time < self.arrive_list[k] and self.arrive_list[k] < self.complete_task[0].end:
-                    # 这里可能还需要调整，因为EST可能会和arrive_list[k]有关
-                    self.advance_virtual_time(self.arrive_list[k] - self.virtual_time)
-                    self.arrive(k)
-                    k += 1
-                self.advance_virtual_time(self.complete_task[0].end - self.virtual_time)
-                complete_task = self.complete_task.pop(0)
-                self.find_ready_tasks(complete_task)
-                self.schedule_tasks()
-            if not any(queue for queue in self.queues) and k < len(self.arrive_list):
-                self.advance_virtual_time(self.arrive_list[k] - self.virtual_time)
-                self.arrive(k)
-                k += 1
+        self.arrive(index)
+        index += 1
+        while any(queue for queue in self.queues) or index < len(self.arrive_list):
+            if any(queue for queue in self.queues):
+                min_k, tar_p, tar_est, tar_vm = self.check_queues()    # 每当有DAG加入或者任务完成调度之后都要调用
+            # 如果所有队列现在都为空，并且还有未处理的到达事件
+            # 则将时间推移到下一个到达事件，并将请求加入队列
+            if not any(queue for queue in self.queues) and index < len(self.arrive_list):
+                self.advance_virtual_time(self.arrive_list[index] - self.virtual_time)
+                self.arrive(index)
+                index += 1
+                min_k, tar_p, tar_est, tar_vm = self.check_queues()
+            while (index < len(self.arrive_list) and self.virtual_time < self.arrive_list[index] and self.arrive_list[index] < tar_est):
+                self.advance_virtual_time(self.arrive_list[index] - self.virtual_time)
+                self.arrive(index)
+                index += 1
+            task = self.queues[min_k][0]
+            # if tar_p in range(NUM_AGENTS):
+            #     if (task.service_id not in self.processors[tar_p].service_list) and (task.id != 0 and task.id != self.dags[task.k].num_tasks - 1):   
+            #         if sum(self.processors[tar_p].service_list) == capacity:
+            #             replace = self.processors[tar_p].service_end.index(min(self.processors[tar_p].service_end[i] for i, v in enumerate(self.processors[tar_p].service_list) if v == 1))
+            #             self.processors[tar_p].service_list[replace] = 0
+            #             # self.processors[tar_p].service_end[replace] = 0
+            #             # self.processors[tar_p].service_start[replace] = 0
+            #         self.processors[tar_p].service_list[task.service_id] = 1
+            #         # self.processors[tar_p].service_start[task.service_id] = self.virtual_time + configuring_time
+                        
+            #         # min_k, tar_p, tar_est, tar_vm = self.check_queues()
+            self.advance_virtual_time(tar_est - self.virtual_time)
+            self.schedule_task(task, tar_p, tar_est, tar_vm)
         
-    def find_ready_tasks(self, t):
-        successors = [succ for succ in self.queues[t.k] if self.graph[t.k][t.id][succ.id] != -1]          # 得到completed任务的直接后继节点
-        for succ in successors:
-            found_pre = False
-            for pre in self.tasks[t.k]:
-                if self.graph[t.k][pre.id][succ.id] != -1:
-                    if self.virtual_time < pre.end:
-                        found_pre = True
-                        break
-                    if self.virtual_time == pre.end and pre in self.complete_task:
-                        found_pre = True
-                        break
-            if not found_pre:
-                self.ready_tasks.append(succ)
-                                                
-    def schedule_tasks(self):
-        self.ready_tasks.sort(key=lambda x: (x.deadline, x.rank), reverse=True)
-        # k_id_list = [(item.k, item.id) for item in self.ready_tasks]
-        # print(k_id_list)
-        for t in self.ready_tasks:
-            result = self.get_tar(t)
-            if isinstance(result, tuple) and len(result) == 3:
-                p, est, vm = result
-                self.processors[p].vms[vm].task_list.append(t)
+    def check_queues(self):
+        tar_est = float('inf')
+        min_k = None
+        tar_vm = None
+        vm = None
+        for k in range(len(self.queues)):
+            if len(self.queues[k]) > 0:
+                result = self.get_tar(self.queues[k][0])
+                if isinstance(result, tuple) and len(result) == 3:
+                    p, est, vm = result
+                else:
+                    p, est = result
+                if est < tar_est:
+                    tar_p = p
+                    tar_est = est
+                    min_k = k
+                    tar_vm = vm
             else:
-                p, est = result
-                self.processors[p].task_list.append(t)
+                continue   
+        return min_k, tar_p, tar_est, tar_vm
+        
+    def schedule_task(self, task, p, est, vm=None):
+        queue = self.queues[task.k]   # 调度第min_k个DAG的头任务
+        if queue:
+            t = queue[0]
             t.processor_id = p
             t.start = est
             t.end = t.start + self.comp_cost[t.k][t.id][p]
-            
-            self.queues[t.k].remove(t)       
-            self.complete_task.append(t)
-        self.complete_task.sort(key=lambda x: x.end)
-        self.ready_tasks.clear()
-        
+        queue.popleft()
+        if p in range(NUM_AGENTS):
+            self.processors[p].task_list.append(task)
+            # self.processors[p].service_end[task.service_id] = t.end
+        else:
+            self.processors[NUM_AGENTS].vms[vm].task_list.append(task)
+         
     def get_est(self, t, p, k): 
         if (p.id in range(NUM_AGENTS) and not p.service_list[t.service_id]) and (t.id != 0 and t.id != self.dags[t.k].num_tasks - 1):
             return float('inf')
         else:
             est = max(self.dags[k].r + self.dags[k].t_offload, self.virtual_time)
+        # est = self.dags[k].r + self.dags[k].t_offload    # 初始化est时间为任务到达时间和offload时间之和
         graph = self.graph[k]
         tasks = self.tasks[k]
+        
         for pre in tasks:
             if graph[pre.id][t.id] != -1:  # if pre also done on p, no communication cost
                 c = graph[pre.id][t.id] if pre.processor_id != p.id else 0
@@ -234,10 +239,21 @@ class COFE:
         print("E = {}, C = {}".format(task_e, task_c))
         SR = satisfy / self.Q * 100
         return SR
-        
-cofe = COFE()
-cofe.receive_dag()
-cofe.schedule()
 
-str = cofe.str()
-print(f"Q={cofe.Q} ES={NUM_AGENTS} lambda={Lambda} SR={str}%")
+result = np.zeros(200)
+for i in range(200):
+    random.seed(i)
+    ondoc = OnDoc()
+    ondoc.receive_dag()
+    ondoc.schedule()
+    str = ondoc.str()
+    result[i] = str
+print(f"Lambda={Lambda} ES={NUM_AGENTS} capacity={capacity} beta={beta} SR={np.mean(result)} max={np.max(result)} min={np.min(result)}")
+
+
+# ondoc = OnDoc()
+# ondoc.receive_dag()
+# ondoc.schedule()
+
+# str = ondoc.str()
+# print(f"Q={ondoc.Q} ES={NUM_AGENTS} lambda={Lambda} SR={str}%")

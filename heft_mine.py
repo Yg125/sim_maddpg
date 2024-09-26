@@ -1,8 +1,8 @@
 # 仿照HEFT算法将其应用在我的场景中
 import numpy as np
-from Configure import NUM_AGENTS, B_aver, B_c, B_e, B_u
+from Configure import B_aver, B_c, B_e, B_u
 from Env import Server, Remote_cloud, server_capacity, comp
-
+NUM_AGENTS = 5
 servers = [Server(i, comp[i], server_capacity[i]) for i in range(NUM_AGENTS)]
 cloud = Remote_cloud(NUM_AGENTS, 7000)
 
@@ -21,6 +21,7 @@ class HEFT:
     def __init__(self, k, input_list=None, verbose=False):
         self.k = k
         self.num_tasks, self.comp_cost, self.graph = input_list
+        self.comp_cost = np.hstack((self.comp_cost[:,:NUM_AGENTS],self.comp_cost[:,-1].reshape(-1,1))) 
         self.num_processors = NUM_AGENTS + 1
         if verbose:
             print("No. of Tasks: ", self.num_tasks)

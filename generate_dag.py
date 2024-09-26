@@ -2,7 +2,7 @@
 import pydot
 import numpy as np
 from random import gauss
-from Configure import B_aver, NUM_AGENTS, NUM_TASKS
+from Configure import B_aver, NUM_AGENTS
 from Env import Server, Remote_cloud, server_capacity, comp
 from os import system
 from heft_mine import HEFT
@@ -12,7 +12,7 @@ np.random.seed(1)
 servers = [Server(i, comp[i], server_capacity[i]) for i in range(NUM_AGENTS)]
 cloud = Remote_cloud(NUM_AGENTS, 7000)
 
-def generate_dag(filename, ccr=0.5):
+def generate_dag(filename, ccr=0.9):
     graph = pydot.graph_from_dot_file(filename)[0]
     n_nodes = len(graph.get_nodes())
 
